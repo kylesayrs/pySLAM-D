@@ -1,0 +1,8 @@
+README.md
+setup.py
+src/Pyslamd.egg-info/PKG-INFO
+src/Pyslamd.egg-info/SOURCES.txt
+src/Pyslamd.egg-info/dependency_links.txt
+src/Pyslamd.egg-info/entry_points.txt
+src/Pyslamd.egg-info/requires.txt
+src/Pyslamd.egg-info/top_level.txt

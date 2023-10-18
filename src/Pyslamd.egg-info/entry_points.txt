@@ -1,0 +1,2 @@
+[console_scripts]
+pyslamd.stitch = pyslamd.main:main
