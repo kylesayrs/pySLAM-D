@@ -4,7 +4,7 @@ This repo is a refactor of [pySLAM-D](https://github.com/armandok/pySLAM-D) whic
 ## Installation ##
 1. Install pyslamd
 ```bash
-git clone {url}
+git clone https://github.com/kylesayrs/pySLAM-D
 python3 -m pip install -e .
 ```
 2. Install [GTSAM](https://gtsam.org)
