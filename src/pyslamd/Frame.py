@@ -1,14 +1,22 @@
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 import cv2
 import utm
 import copy
 import numpy
+import pymap3d
 import open3d as o3d
 
-from pyslamd.gps import get_gps_coords, CoordsType
 from pyslamd.Settings import Settings, CameraSettings
-from pyslamd.helpers import blocks
+from pyslamd.utils.exif import get_exif_measurements
+from pyslamd.utils.pose import (
+    orientation_to_rotation,
+    get_rotation,
+    set_rotation,
+    get_translation,
+    set_translation,
+    get_pose
+)
 
 
 class Frame:
@@ -19,31 +27,28 @@ class Frame:
     :param image_path: path to frame image data
     :param frame_num: frame number, assigned sequentially
     :param settings: settings used for camera intrinsics and cloud sparsity
-    :param keypoint_detector: detector used to detect keypoints. Passed by reference
-        to avoid duplicate instatiation of the detector
     """
     def __init__(
         self,
         image_path: str,
         frame_num: int,
         settings: Settings,
-        keypoint_detector: cv2.Feature2D,
     ):
         self.image_path = image_path
         self.frame_num = frame_num
         self.key_frame_num = None
         self.settings = settings
 
-        self.gps_coords = get_gps_coords(image_path)
-        self.keypoints, self.descriptors = self._get_keypoints(keypoint_detector)
+        self.gps_coords, self.imu_orientation = get_exif_measurements(image_path, settings)
 
+        self.keypoints = None
+        self.descriptors = None
+        
         self.global_pose = None
-        self.global_pose_cache = None
 
-        self.point_cloud = None
+        self.world_point_cloud_cache = None
+        self.global_point_cloud_cache = None
         self.point_cloud_needs_add = True
-
-        self.gr_point_cloud_cache = None
 
 
     def set_key_frame_num(self, key_frame_num: int):
@@ -58,29 +63,48 @@ class Frame:
         :param pose: 4x4 pose relative to the first key frame
         """
         self.global_pose = pose
+        self.global_point_cloud_cache = None
 
-        self.update_point_cloud()
+
+    def assign_keypoints(self, keypoints: List[cv2.KeyPoint], descriptors: numpy.ndarray):
+        """
+        Keypoints are calculated and assigned by the FrameMatcher
+
+        :param keypoints: list of keypoint positions
+        :param descriptors: list of keypoint descriptors
+        """
+        self.keypoints = keypoints
+        self.descriptors = descriptors
 
     
-    def georeference_point(
+    def image_to_world_point(
         self,
         x_position: float,
         y_position: float
     ) -> Tuple[float, float, float]:
         """
+        Apply inverse camera intrinsic operation to map an image point to a
+        world point
+
+        Image points are wrt the top left corner
+
+        The inverse camera intrinsic matrix is
+        [[depth / fx      0        -cx * depth / fx]
+         [     0      depth / fy   -cy * depth / fy]
+         [     0          0            depth      ]]
+
         :param x_position: x position of point
         :param y_position: y position of point
         :return: east-north-down position of the point in the world
         """
         depth = self._get_pixel_depth(x_position, y_position)
 
+        y_position = self.settings.camera.height - y_position  # convert from TL to BL
+
         fx = self.settings.camera.fx
         fy = self.settings.camera.fy
         cx = self.settings.camera.cx
         cy = self.settings.camera.cy
-        """
-        """
-
 
         return numpy.array([
             (x_position - cx) * depth / fx,
@@ -89,111 +113,82 @@ class Frame:
         ])
 
 
-    def update_point_cloud(self):
+    def get_point_cloud(self) -> o3d.geometry.PointCloud:
         """
-        Used to update the point cloud only when the global pose is updated
+        The global point cloud cache is cleared whenever the frame is
+        assigned a new position
 
-        :raises ValueError: if this function is invoked with no global pose set
+        :return: point cloud referenced to global world coordinates
         """
-        if self.global_pose is None:
-            raise ValueError()
+        if self.global_point_cloud_cache is None:
+            world_point_cloud = copy.deepcopy(self.get_world_point_cloud())
+            self.global_point_cloud_cache = world_point_cloud.transform(self.global_pose)
 
-        # get georeferenced cloud
-        self.point_cloud = self.get_georeferenced_point_cloud()
-
-        # transform using pose
-        self.point_cloud.transform(self.global_pose)
+        return self.global_point_cloud_cache
 
     
-    def get_georeferenced_point_cloud(self) -> o3d.geometry.PointCloud:
+    # TODO: move to visualizer.py
+    def get_world_point_cloud(self) -> o3d.geometry.PointCloud:
         """
-        The georeferenced point cloud cached prior to pose transformation. This
-        cache never needs to be updated
+        The world referenced point cloud cached prior to pose transformation.
+        This cache never needs to be updated
 
         :return: Point cloud which has been georeferenced with respect to
             global pose
         """
-        if self.gr_point_cloud_cache is not None:
-            return copy.deepcopy(self.gr_point_cloud_cache)
+        if self.world_point_cloud_cache is None:
+            image_rgb = o3d.io.read_image(self.image_path)
+            image_depth = o3d.geometry.Image(self._get_depth_image())
+            if any(image_rgb.get_max_bound() != image_depth.get_max_bound()):
+                raise ValueError("Image shape does not match camera parameters")
 
-        image_rgb = o3d.io.read_image(self.image_path)
-        image_depth = o3d.geometry.Image(self._get_depth_image())
-        if any(image_rgb.get_max_bound() != image_depth.get_max_bound()):
-            raise ValueError("Image shape does not match camera parameters")
-
-        image_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(image_rgb, image_depth, depth_scale=1.0, depth_trunc=numpy.inf, convert_rgb_to_intensity=False)
-        camera_parameters = o3d.camera.PinholeCameraIntrinsic(**self.settings.camera.dict())
-        
-        point_cloud = o3d.geometry.PointCloud.create_from_rgbd_image(image_rgbd, camera_parameters)
-        point_cloud = point_cloud.uniform_down_sample(self.settings.visualizer.downsample)
-
-        self.gr_point_cloud_cache = copy.deepcopy(point_cloud)
-        return point_cloud
-
-
-    def get_corners(self, first_gps_coords: numpy.ndarray) -> List[Tuple[float, float]]:
-        """
-        TODO: rename to 'get footprint' and standardize order
-
-        :param first_gps_coords: used to offset translation
-        :return: list of world corner positions in LL LR UR UL order
-        """
-        corners = [
-            (0, 0),
-            (self.settings.camera.width, 0),
-            (self.settings.camera.width, self.settings.camera.height),
-            (0, self.settings.camera.height)
-        ]
-        left, up, zone, letter = utm.from_latlon(*first_gps_coords)
-
-        new_corners = []
-        for corner in corners:
-            corner = self.georeference_point(*corner)
-            corner = self.global_pose @ numpy.array(list(corner) + [1])
-            corner = numpy.array([left, up]) + corner[:2]
-            corner = utm.to_latlon(*corner[:2], zone, letter)
-
-            new_corners.append(corner)
-
-        return new_corners
-    
-
-    def _get_keypoints(self, keypoint_detector: cv2.Feature2D) -> Tuple[List[cv2.KeyPoint], numpy.ndarray]:
-        """
-        Break into blocks. This ensures that each block has at least n_features,
-        so the distribution of features is spread evenly throughout the image area.
-        This helps matching since it ensures features exist in the overlap
-
-        :param keypoint_detector: detector used to detect keypoints
-        :return: keypoint positions and descriptors
-        """
-        image = cv2.imread(self.image_path)
-        image_greyscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        keypoints = []
-
-        block_args = (self.settings.keypoints.num_block_rows, self.settings.keypoints.num_block_columns)
-        for y_start, y_end, x_start, x_end in blocks(image.shape[:2], *block_args):
-            block = image_greyscale[y_start: y_end, x_start: x_end]
-            block_keypoints = keypoint_detector.detect(block, None)  # TODO: check if can use detectAndCompute 
-
-            for block_keypoint in block_keypoints:
-                block_keypoint.pt = (  # keypoints are x,y
-                    block_keypoint.pt[0] + x_start,
-                    block_keypoint.pt[1] + y_start,
-                )
+            image_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(image_rgb, image_depth, depth_scale=1.0, depth_trunc=numpy.inf, convert_rgb_to_intensity=False)
+            camera_parameters = o3d.camera.PinholeCameraIntrinsic(**self.settings.camera.dict())
             
-            keypoints.extend(block_keypoints)
+            point_cloud = o3d.geometry.PointCloud.create_from_rgbd_image(image_rgbd, camera_parameters)
+            point_cloud = point_cloud.uniform_down_sample(self.settings.visualizer.downsample)
 
-        keypoints, descriptors = keypoint_detector.compute(image_greyscale, keypoints)
+            # for unexplainable reasons, open3d loads images upside down
+            point_cloud.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
 
-        return keypoints, descriptors
+            self.world_point_cloud_cache = point_cloud
+            
+        return self.world_point_cloud_cache
+
+    
+    def get_gps_translation(self, reference: "Frame") -> numpy.ndarray:
+        return pymap3d.geodetic2enu(*self.gps_coords, *reference.gps_coords)
+
+
+    def get_imu_rotation(self, reference: Optional["Frame"] = None) -> numpy.ndarray:
+        reference_orientation = (
+            reference.imu_orientation
+            if reference is not None
+            else numpy.zeros(3)
+        )
+        return orientation_to_rotation(self.imu_orientation - reference_orientation)
+
+    
+    def image_to_latlng_point(
+        self,
+        x_position: float,
+        y_position: float,
+        origin_frame: "Frame"
+    ) -> Tuple[float, float]:
+        left, up, zone, letter = utm.from_latlon(*origin_frame.gps_coords[:2])
+
+        world_point = self.image_to_world_point(x_position, y_position)
+        global_point = self.global_pose @ numpy.append(world_point, 1)
+        global_point_offset = numpy.array([left, up]) + global_point[:2]
+
+        return utm.to_latlon(*global_point_offset[:2], zone, letter)
 
 
     def _get_pixel_depth(self, x_position: float, y_position: float) -> float:
         """
         Depth is defined as the gps altitude for all pixels. Future work could
-        integrate depth maps or project depth onto a flat surface prior
+        integrate depth maps or project depth onto a flat surface prior using
+        attitude information
 
         :param x_position: x position of the pixel
         :param y_position: y position of the pixel
@@ -205,6 +200,7 @@ class Frame:
     def _get_depth_image(self) -> numpy.ndarray:
         """
         Construct an image of pixel depth at every pixel position
+        Used for constructing a depth image for open3d point cloud
 
         :return: depth image
         """
@@ -213,3 +209,7 @@ class Frame:
         depth = self._get_pixel_depth(0, 0)  # TODO
         depth_image = numpy.full(image_shape, depth, dtype=numpy.float32)
         return depth_image
+
+
+    def __repr__(self) -> str:
+        return f"Frame ({self.frame_num}, {self.key_frame_num}, {self.image_path})"

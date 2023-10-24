@@ -8,7 +8,14 @@ from gtsam.symbol_shorthand import X, L
 
 from pyslamd.Frame import Frame
 from pyslamd.Settings import FactorGraphSettings
-from pyslamd.helpers import get_rotation
+from pyslamd.utils.pose import (
+    get_pose,
+    get_rotation,
+    set_rotation,
+    get_translation,
+    set_translation,
+    orientation_to_rotation,
+)
 
 
 class FactorGraphGTSAM:
@@ -17,23 +24,27 @@ class FactorGraphGTSAM:
 
     :param settings: Factor graph settings which define noise models
     """
-    def __init__(self, settings: FactorGraphSettings):
+    def __init__(self, settings: FactorGraphSettings, use_gps: bool, use_imu: bool):
+        self.use_gps = use_gps
+        self.use_imu = use_imu
+
         # construct factor graph
         self.graph = gtsam.NonlinearFactorGraph()
-        self.initial = gtsam.Values()  # initial guesses used for optimizer
+        self.initial = gtsam.Values()  # initial guesses used for optimization
 
         # define noise models
         self.pose_noise = gtsam.noiseModel.Diagonal.Sigmas(
-            [settings.rotation_noise] * 3 + [settings.translation_noise] * 3
+            [numpy.radians(settings.vo_rotation_noise)] * 3 + [settings.vo_translation_noise] * 3
         )
-        self.gps_noise = gtsam.noiseModel.Diagonal.Sigmas(
-            [numpy.pi] * 3 + [settings.gps_noise] * 3  # TODO: combine with attitude noise
-        )
-        self.attitude_noise = gtsam.noiseModel.Isotropic.Sigma(3, numpy.deg2rad(settings.attitude_noise))
+        self.gps_noise = gtsam.noiseModel.Isotropic.Sigma(3, settings.gps_noise)
+        self.imu_noise = gtsam.noiseModel.Isotropic.Sigma(3, numpy.deg2rad(settings.imu_noise))
 
-        # Fix the initial frame as the origin
-        self.graph.add(gtsam.NonlinearEqualityPose3(X(0), gtsam.Pose3(numpy.eye(4))))
-        self.gps_origin_coords = None
+        # Rotations are relative to north, translations are relative to origin frame
+        self.origin_frame = None
+
+
+    def set_origin_frame(self, key_frame: Frame):
+        self.origin_frame = key_frame
 
 
     def add_node(self, key_frame: Frame, initial_pose_estimate: numpy.ndarray):
@@ -49,8 +60,19 @@ class FactorGraphGTSAM:
             gtsam.Pose3(initial_pose_estimate)
         )
 
-        if self.gps_origin_coords is None:
-            self.gps_origin_coords = key_frame.gps_coords
+        # fix origin
+        if key_frame.key_frame_num == 0:
+            rotation = key_frame.get_imu_rotation() if self.use_imu else numpy.eye(3)
+            self.graph.add(
+                gtsam.PoseTranslationPrior3D(
+                    X(0),
+                    gtsam.Pose3(
+                        r=gtsam.gtsam.Rot3(rotation),
+                        t=numpy.zeros(3)
+                    ),
+                    gtsam.noiseModel.Diagonal.Sigmas(numpy.array([0, 0, 0]))
+                )
+            )
 
 
     def add_between_factor(
@@ -67,52 +89,61 @@ class FactorGraphGTSAM:
         :param relative_pose: Transformation from key_frame to reference_frame
         """
         self.graph.add(
-            gtsam.BetweenFactorPose3(
-                X(key_frame.key_frame_num),
+            gtsam.BetweenFactorPose3(  # src, dst
                 X(reference_key_frame.key_frame_num),
+                X(key_frame.key_frame_num),
                 gtsam.Pose3(relative_pose),
                 self.pose_noise
             )
         )
 
 
-    def add_gps_factor(self, key_frame: Frame, gps_coords: Tuple[float, float, float]):
-        """
-        TODO: combine with add_attitude_factor
-        """
-        relative_meters = pymap3d.geodetic2enu(*key_frame.gps_coords, *self.gps_origin_coords)
-        relative_meters = (relative_meters[0], relative_meters[1], relative_meters[2])
-        relative_meters = numpy.array(relative_meters, dtype=numpy.float64)
-
-        gps_pose = numpy.eye(4)
-        gps_pose[0:3, 3] = relative_meters
-
+    def add_gps_factor(self, key_frame: Frame):
+        translation = key_frame.get_gps_translation(self.origin_frame)
+        gps_prior = gtsam.Pose3(
+            r=gtsam.Rot3(numpy.eye(3)),  # not used
+            t=translation
+        )
         self.graph.add(
-            gtsam.PriorFactorPose3(
+            gtsam.PoseTranslationPrior3D(
                 X(key_frame.key_frame_num),
-                gtsam.Pose3(gps_pose),
+                gps_prior,
                 self.gps_noise
             )
         )
 
-    
-    def add_attitude_factor(self, key_frame: Frame, pose_estimate: numpy.ndarray):
-        """
-        TODO: combine with gps_factor
-        """
-        rotation_estimate = get_rotation(pose_estimate)
-        attitude_prior = gtsam.Pose3(
-            r=gtsam.Rot3(rotation_estimate),
-            t=numpy.array([0.0, 0.0, 0.0]
-        ))
+
+    def add_imu_factor(self, key_frame: Frame):
+        rotation = key_frame.get_imu_rotation()
+        orientation_prior = gtsam.Pose3(
+            r=gtsam.Rot3(rotation),
+            t=numpy.zeros(3)  # not used
+        )
 
         self.graph.add(
             gtsam.PoseRotationPrior3D(
                 X(key_frame.key_frame_num),
-                attitude_prior,
-                self.attitude_noise
+                orientation_prior,
+                self.imu_noise
             )
         )
+
+
+    def add_fixed_orientation_factor(self, key_frame: Frame):
+        rotation = numpy.eye(3)
+        orientation_prior = gtsam.Pose3(
+            r=gtsam.Rot3(rotation),
+            t=numpy.zeros(3)  # not used
+        )
+
+        self.graph.add(
+            gtsam.PoseRotationPrior3D(
+                X(key_frame.key_frame_num),
+                orientation_prior,
+                self.imu_noise  # use imu noise
+            )
+        )
+        
 
 
     def optimize(self) -> gtsam.Values:

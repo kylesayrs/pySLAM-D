@@ -1,8 +1,17 @@
 import numpy
 import teaserpp_python
 
+from pyslamd.utils.pose import get_pose
+
 
 class PoseOptimizerTeaser:
+    """
+    The pose optimizer class, given a list of points and correspondences,
+    performs point cloud registration to estimate the pose matrix which
+    describes the relative transformation between the two point clouds
+
+    TODO: move these settings to Settings.py
+    """
     def __init__(self):
         self.NOISE_BOUND = 0.1  # 0.05
         self.solver_params = teaserpp_python.RobustRegistrationSolver.Params()
@@ -17,12 +26,17 @@ class PoseOptimizerTeaser:
         self.solver = teaserpp_python.RobustRegistrationSolver(self.solver_params)
 
 
-    def solve(self, src, dst):
+    def solve(self, src: numpy.ndarray, dst: numpy.ndarray) -> numpy.ndarray:
+        """
+        Performs point cloud registration
+
+        :param src: source points in corresponding order
+        :param dst: destination points in corresponding order
+        :return: the pose matrix which describes the transformation between the
+            two point clouds
+        """
         self.solver.solve(src, dst)
 
         solution = self.solver.getSolution()
 
-        pose = numpy.hstack((solution.rotation, numpy.expand_dims(solution.translation, axis=1)))
-        pose = numpy.concatenate((pose, numpy.expand_dims(numpy.array([0, 0, 0, 1]), axis=1).T), axis=0)
-
-        return pose
+        return get_pose(solution.rotation, solution.translation)

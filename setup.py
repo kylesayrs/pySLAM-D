@@ -5,6 +5,7 @@ _deps = [
     "pydantic",
     "pymap3d",
     "open3d",
+    "shapely"
 ]
 
 setup(
