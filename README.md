@@ -1,5 +1,5 @@
 # Pyslamd #
-This repo is a refactor of [pySLAM-D](https://github.com/armandok/pySLAM-D) which includes significant code cleanup, documentation, and usability improvements.
+This repo is a refactor of [pySLAM-D](https://github.com/armandok/pySLAM-D) which includes significant code cleanup, documentation, and additional feature matching parameters.
 
 <p align="center">
 <img src="assets/stitching.png" alt="Example Stitching"/>
@@ -32,11 +32,4 @@ settings will be documented as script arguments
 ```bash
 pyslamd.stitch path/to/image/directory
 ```
-Images must be geotagged with gps coordinates
-
-## TODO ##
-1. Implement image outputting
-2. Implement node pruning to bound factor graph computation
-3. Implement outlier reprojection and keypoint filtering
-3. Test with 99% overlap vs 50% overlap
-4. Implement mosiacing for quality improvement
+Images must be geotagged with gps coordinates in order to georeference frame poses within a real world coordinate frame.
