@@ -1,6 +1,10 @@
 # Pyslamd #
 This repo is a refactor of [pySLAM-D](https://github.com/armandok/pySLAM-D) which includes significant code cleanup, documentation, and usability improvements.
 
+<p align="center">
+<img src="assets/stitching.png" alt="Example Stitching"/>
+</p>
+
 ## Technical explaination ##
 The Pyslam-D live stitching algorithm works by generating a factor graph whose nodes are each image’s pose in georeferenced 3D space and whose edges (factors) are the relative pose transformations from one node to another. During the optimization step, the nodes of the factor graph are optimized for spatial consistency, meaning that even noisy factor measurements compound on one another to produce a consistent description of image poses.
 
