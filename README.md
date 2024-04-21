@@ -1,5 +1,5 @@
 # Pyslamd #
-This repo is a refactor of [pySLAM-D](https://github.com/armandok/pySLAM-D) which includes significant code cleanup, documentation, and additional feature matching parameters.
+This repo is a rewrite of [pySLAM-D](https://github.com/armandok/pySLAM-D) which includes significant code cleanup, documentation, and additional matching parameters.
 
 <p align="center">
 <img src="assets/stitching.png" alt="Example Stitching"/>
