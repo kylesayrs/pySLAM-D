@@ -1,5 +1,5 @@
 # PySLAM-D #
-PySLAM-D is a UAV-tailored SLAM stitching inspired by [pySLAM-D](https://github.com/armandok/pySLAM-D). This implementation significantly increases the robustness and usability of the initial design, includes functional documentation, and implements additional matching options and parameters.
+PySLAM-D is a UAV-tailored SLAM stitching inspired by [pySLAM-D](https://github.com/armandok/pySLAM-D) which was developed in partnership with GreenSight Agronomics. This implementation significantly increases the robustness and usability of the initial design, includes functional documentation, and implements additional matching options and parameters.
 
 <p align="center">
 <img src="assets/small_stitch.png" alt="Example Stitching" width=75%/>
