@@ -1,5 +1,5 @@
 # Pyslamd #
-This repo is a rewrite of [pySLAM-D](https://github.com/armandok/pySLAM-D) which includes significant code cleanup, documentation, and additional matching parameters.
+UAV-tailored SLAM stitching inspired by [pySLAM-D](https://github.com/armandok/pySLAM-D). This implementation significantly increases the robustness and usability of the initial design, includes functional documentation, and implements additional matching options and parameters.
 
 <p align="center">
 <img src="assets/small_stitch.png" alt="Example Stitching"/>
@@ -12,7 +12,7 @@ The first factor type, odometry factors, are determined by performing visual odo
 
 The second factor type, gps factors, help to determine the image’s position. These factors are often noisy, but are valuable for compensating for bad odometry estimates. Their noise, unlike odometry error, is independent of flight duration, meaning that these factors prevent images from drifting away from their true, georeferenced positions over time.
 
-The third factor type, attitude factors, incorporate attitude measurements from the drone when the picture was taken. These factors make image rotations more accurate and can be used to prune odometry filters, making odometry calculations faster and more accurate. These factors have not been implemented yet.
+The third factor type, attitude factors, incorporate attitude measurements from the drone when the picture was taken. These factors make image rotations more accurate and can be used to prune odometry filters, making odometry calculations faster and more accurate.
 
 <p align="center">
 <img src="assets/full_stitch.png" alt="Example Stitching"/>
