@@ -36,7 +36,7 @@ class OdometryMatcher():
         self.use_gps = use_gps
         self.use_imu = use_imu
 
-        self.keypoint_detector =  make_keypoint_detector(settings.keypoints)
+        self.keypoint_detector = make_keypoint_detector(settings.keypoints)
         self.keypoint_matcher = make_keypoint_matcher(settings.keypoints)
 
 
@@ -49,7 +49,7 @@ class OdometryMatcher():
         :param keypoint_detector: detector used to detect keypoints
         :return: keypoint positions and descriptors
         """
-        image = cv2.imread(frame.image_path)
+        image = frame.get_image()
         image_greyscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         keypoints = []
@@ -57,7 +57,7 @@ class OdometryMatcher():
         block_args = (self.settings.keypoints.num_block_rows, self.settings.keypoints.num_block_columns)
         for y_start, y_end, x_start, x_end in blocks(image.shape[:2], *block_args):
             block = image_greyscale[y_start: y_end, x_start: x_end]
-            block_keypoints = self.keypoint_detector.detect(block, None)  # TODO: check if can use detectAndCompute 
+            block_keypoints = self.keypoint_detector.detect(block, None)  # TODO: check if can use detectAndCompute
 
             for block_keypoint in block_keypoints:
                 block_keypoint.pt = (  # keypoints are x,y
@@ -71,20 +71,21 @@ class OdometryMatcher():
         frame.assign_keypoints(keypoints, descriptors)
     
 
-    def match_frames(self, frame: Frame, key_frames: List[Frame]) -> List[Union[shapely.Polygon, None]]:
+    def match_frames(self, frame: Frame, key_frames: List[Frame], origin_frame: Frame) -> List[Union[shapely.Polygon, None]]:
         """
         :param frame: Frame which matches to key frames
         :param key_frames: List of key frames to match to
+        :param origin_frame: TODO
         :return: List whose ith entry is the relative pose with key_frame i or None
         """
         last_kf_num = len(key_frames) - 1
 
         relative_poses = []
         for key_frame in key_frames:
-            is_candidate, overlap = self._is_match_candidate(key_frame, frame, last_kf_num)
+            is_candidate, overlap = self._is_match_candidate(key_frame, frame, last_kf_num, origin_frame)
 
             relative_poses.append(
-                self._match_frame(frame, key_frame, overlap)
+                self._match_frame(frame, key_frame, overlap, origin_frame)
                 if is_candidate
                 else None
             )
@@ -96,7 +97,8 @@ class OdometryMatcher():
         self,
         key_frame: Frame,
         frame: Frame,
-        last_kf_num: int
+        last_kf_num: int,
+        origin_frame: Frame
     ) -> Tuple[bool, Union[shapely.Polygon, None]]:
         """
         If gps_match_bound is set, use gps_match_bound
@@ -108,8 +110,9 @@ class OdometryMatcher():
         :param key_frame: Potential match candidate
         :param frame: Frame to match from
         :param last_kf_num: last key frame index, used to check for last key frame
+        :param origin_frame: TODO
         :return: True if key_frame is a match candidate, false otherwise
-            If the world overlap was computed, this is also returned
+            If the global overlap was computed, this is also returned
         """
         if self.settings.overlap_matching and not (self.use_gps and self.use_imu):
             raise ValueError("overlap_matching is set but use_gps or use_imu is not")
@@ -125,19 +128,19 @@ class OdometryMatcher():
             distance = numpy.linalg.norm(relative_translation)
             if distance <= self.settings.gps_match_bound:
                 if self.settings.overlap_matching:
-                    overlap = get_overlap(frame, key_frame)
+                    overlap = get_overlap(frame, key_frame, origin_frame)
 
                 return True, overlap
 
             return False, None
 
         if self.settings.overlap_matching:
-            overlap = get_overlap(frame, key_frame)
+            overlap = get_overlap(frame, key_frame, origin_frame)
             return overlap is not None, overlap
 
         if key_frame.key_frame_num == last_kf_num:
             if self.settings.overlap_matching:
-                overlap = get_overlap(frame, key_frame)
+                overlap = get_overlap(frame, key_frame, origin_frame)
             return True, overlap
 
         return False, None
@@ -147,13 +150,16 @@ class OdometryMatcher():
         self,
         frame: Frame,
         key_frame: Frame,
-        overlap: Union[shapely.Polygon, None]
+        overlap: Union[shapely.Polygon, None],
+        origin_frame: Frame
     ) -> Union[numpy.ndarray, None]:
         """
         TODO
 
         :param frame: destination frame
         :param key_frame: source frame
+        :param overlap: TODO
+        :param origin_frame: TODO
         :return: relative pose from source frame to destination frame
         """
         print(
@@ -176,7 +182,7 @@ class OdometryMatcher():
         # prune points not in world overlap
         if overlap is not None:
             frame_mask, key_frame_mask = get_overlap_masks(
-                frame_points, frame, key_frame_points, key_frame, overlap
+                frame_points, frame, key_frame_points, key_frame, overlap, origin_frame
             )
 
             frame_points = mask_list(frame_points, frame_mask)
@@ -216,7 +222,7 @@ class OdometryMatcher():
         if self.settings.debug_matches:
             if overlap is not None:
                 _draw_matches(frame, key_frame, matches, frame_mask, key_frame_mask)
-                _draw_overlap(frame, key_frame)
+                _draw_overlap(frame, key_frame, origin_frame)
             else:
                 print("asdf")
                 _draw_matches(frame, key_frame, matches)
@@ -224,8 +230,6 @@ class OdometryMatcher():
 
         # use optimizer to find pose transform from key_frame to frame (src, dst)
         optimizer = PoseOptimizerTeaser()
-        #print(numpy.mean(frame_points, axis=0))
-        #print(numpy.mean(key_frame_points, axis=0))
         frame_points, key_frame_points = get_matched_points(frame_points, key_frame_points, matches)
 
         # starting at the keyframe position, how much do I move the frame
@@ -233,7 +237,7 @@ class OdometryMatcher():
         relative_pose = optimizer.solve(frame_points.T, key_frame_points.T)
 
         # check for extreme pose
-        if not self.check_vo_pose(relative_pose):
+        if not self.check_vo_pose(frame, key_frame, relative_pose):
             return None
 
         # reproject outliers onto key points
@@ -244,18 +248,29 @@ class OdometryMatcher():
         return relative_pose
 
     
-    def check_vo_pose(self, pose: numpy.ndarray) -> bool:
+    def check_vo_pose(self, frame: Frame, key_frame: Frame, pose: numpy.ndarray) -> bool:
         # check optimization
         if pose is None:
             print("optimization failure")
             return False
 
         # check translation threshold
-        total_translation = numpy.linalg.norm(get_translation(pose))
-        print(f"translation {int(total_translation):04d} | ", end="")
-        if total_translation > self.settings.max_translation:
-            print("translation failure")
-            return False
+        vo_translation = get_translation(pose)
+        vo_translation_norm = numpy.linalg.norm(vo_translation)
+        print(f"translation {int(vo_translation_norm):04d} ", end="")
+
+        if self.use_gps:
+            gps_translation = get_rotation(pose) @ frame.get_gps_translation(key_frame)
+            gps_translation_norm = numpy.linalg.norm(gps_translation)
+
+            print(f"({int(gps_translation_norm):04d}) ", end="")
+
+            difference = numpy.abs(vo_translation_norm - gps_translation_norm)
+            if difference > self.settings.max_translation_margin:
+                print(f"| failure")
+                return False
+        
+        print("| ", end="")
 
         # TODO: print rotation in euler degrees and add a threshold
 
@@ -322,47 +337,27 @@ def _draw_matches(
     print(f"Wrote matches to {file_path}")
 
 
-def _draw_overlap(frame: Frame, reference: Frame):
+def _draw_overlap(frame: Frame, key_frame: Frame, origin_frame: Frame):
     from pyslamd.utils.pose import get_pose
     """
     COPY FROM overlap.py:get_overlap
     """
-    corners = [
-        (0, 0),
-        (frame.settings.camera.width, 0),
-        (frame.settings.camera.width, frame.settings.camera.height),
-        (0, frame.settings.camera.height)
-    ]
-
-    extrinsic = get_pose(
-        frame.get_imu_rotation(reference),
-        frame.get_gps_translation(reference)
-    )
-
-    # TODO: if these are compuated with global reference, then they can be cached
-    # which reduces runtime
-    frame_corners = numpy.array([
-        (extrinsic @ numpy.append(frame.image_to_world_point(*corner), 1))[:2]  # project to flat plane
-        for corner in corners
-    ])
-
-    reference_corners = numpy.array([
-        reference.image_to_world_point(*corner)[:2]  # project to flat plane
-        for corner in corners
-    ])
+    frame_corners = frame.get_global_footprint(origin_frame)
+    key_frame_corners = key_frame.get_global_footprint(origin_frame)
 
     frame_footprint = shapely.Polygon(frame_corners)
-    reference_footprint = shapely.Polygon(reference_corners)
+    key_frame_footprint = shapely.Polygon(key_frame_corners)
 
-    overlap = shapely.intersection(frame_footprint, reference_footprint)
+    overlap = shapely.intersection(frame_footprint, key_frame_footprint)
 
     # plot
-    figure, axes = plt.subplots(1, 1)
-    axes.plot(*frame_footprint.exterior.xy)
-    axes.plot(*reference_footprint.exterior.xy)
-    axes.plot(*overlap.exterior.xy)
+    figure, axis = plt.subplots(1, 1)
+    axis.plot(*frame_footprint.exterior.xy)
+    axis.plot(*key_frame_footprint.exterior.xy)
+    axis.plot(*overlap.exterior.xy)
+    axis.axis("equal")
 
-    file_name = f"{frame.frame_num}_{reference.frame_num}.png"
+    file_name = f"{frame.frame_num}_{key_frame.frame_num}.png"
     file_path = os.path.join("overlaps", file_name)
     figure.savefig(file_path)
     print(f"Wrote overlap to {file_path}")

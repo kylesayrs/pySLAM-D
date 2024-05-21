@@ -32,6 +32,7 @@ class Tracker:
         
         self.frames = []
         self.key_frames = []
+        self.origin_frame = None
 
         self.point_cloud_cache = open3d.geometry.PointCloud() # TODO: be smarter about this
 
@@ -46,6 +47,10 @@ class Tracker:
         else:
             self.visualizer = None
 
+        if self.settings.out_dir is not None:
+            for file_name in os.listdir(self.settings.out_dir):
+                os.remove(os.path.join(self.settings.out_dir, file_name))
+
 
     def process_image(self, image_path: str):
         """
@@ -59,7 +64,7 @@ class Tracker:
 
         # collect poses and inliers w.r.t. to key frames
         if self.settings.use_vo:
-            relative_poses = self.matcher.match_frames(frame, self.key_frames)
+            relative_poses = self.matcher.match_frames(frame, self.key_frames, self.origin_frame)
         else:
             relative_poses = []
 
@@ -71,7 +76,8 @@ class Tracker:
         self._optimize_and_update_poses()
 
         # save pose information
-        #self._save_image_poses()
+        if self.settings.out_dir is not None:
+            self._save_image_poses()
 
         # render visual
         if self.settings.visualizer.render:
@@ -91,7 +97,7 @@ class Tracker:
             global_pose_estimate = get_result_at(result, key_frame_index)
             key_frame.set_global_pose(global_pose_estimate)  # TODO: do not update the global pose if it does not differ from the current pose more than some threshold
             #print(f"{key_frame.key_frame_num}: {global_pose_estimate}")
-            #corners = key_frame.get_latlng_corners(self.factor_graph.origin_frame)
+            #corners = key_frame.get_latlng_corners(self.origin_frame)
             #print(f"{os.path.basename(key_frame.image_path)}: {corners}")
 
 
@@ -166,7 +172,7 @@ class Tracker:
 
         # set origin frame
         if len(self.key_frames) == 0:
-            self.factor_graph.set_origin_frame(frame)
+            self.origin_frame = frame
 
         # add to list of key frames
         frame.set_key_frame_num(len(self.key_frames))
@@ -183,13 +189,14 @@ class Tracker:
 
         # add gps factor
         if self.settings.use_gps and self.settings.graph.use_gps_factor:
-            self.factor_graph.add_gps_factor(frame)
+            self.factor_graph.add_gps_factor(frame, self.origin_frame)
             
         # if imu is not available, assume a fixed orientation
-        if self.settings.use_imu and self.settings.graph.use_imu_factor:
-            self.factor_graph.add_imu_factor(frame)
-        else:
-            self.factor_graph.add_fixed_orientation_factor(frame)
+        if self.settings.graph.use_imu_factor:
+            if self.settings.use_imu:
+                self.factor_graph.add_imu_factor(frame)
+            else:
+                self.factor_graph.add_fixed_orientation_factor(frame)
 
         print(f"Added {frame}")
 
@@ -210,14 +217,14 @@ class Tracker:
         """
         return get_pose(
             (
-                frame.get_imu_rotation(self.factor_graph.origin_frame)
+                frame.get_imu_rotation(self.origin_frame)
                 if self.settings.use_imu
                 else get_rotation(self.key_frames[-2].global_pose)
                 if frame.key_frame_num != 0
                 else numpy.eye(3)
             ),
             (
-                frame.get_gps_translation(self.factor_graph.origin_frame)
+                frame.get_gps_translation(self.origin_frame)
                 if self.settings.use_gps
                 else get_translation(self.key_frames[-2].global_pose)
                 if frame.key_frame_num != 0
@@ -227,54 +234,61 @@ class Tracker:
 
 
     def _save_image_poses(self):
-        for key_frame in self.key_frames:
-            image_corners = [
-                (0, 0),
-                (key_frame.settings.camera.width, 0),
-                (key_frame.settings.camera.width, key_frame.settings.camera.height),
-                (0, key_frame.settings.camera.height)
-            ]
+        #for key_frame in self.key_frames:
+        key_frame = self.key_frames[-1]  # for now, only write the last image
+        image_corners = [
+            (0, 0),
+            (key_frame.settings.camera.width, 0),
+            (key_frame.settings.camera.width, key_frame.settings.camera.height),
+            (0, key_frame.settings.camera.height)
+        ]
 
-            latlng_corners = [
-                key_frame.image_to_latlng_point(*corner, self.factor_graph.origin_frame)
-                for corner in image_corners
-            ]
+        geodetic_corners = [
+            key_frame.image_to_geodetic_point(*corner, self.origin_frame)
+            for corner in image_corners
+        ]
 
-            ground_control_points = [
-                rasterio.control.GroundControlPoint(
-                    row=image_corner[1],
-                    col=image_corner[0],
-                    x=latlng_corner[1],
-                    y=latlng_corner[0],
-                    z=0.0  # assume flat projection
-                )
-                for image_corner, latlng_corner in zip(image_corners, latlng_corners)
-            ]
-
-            with rasterio.open(key_frame.image_path, mode="r") as _raster:
-                image_data = _raster.read()
-                image_metadata = _raster.meta.copy()
-
-            crs = rasterio.CRS.from_epsg(4326)  # WGS84
-
-            destination_data, destination_data_transform = warp.reproject(
-                image_data,
-                gcps=ground_control_points,
-                #src_transform=src_transform,
-                src_crs=crs,
-                dst_crs=crs,
-                resampling=rasterio.enums.Resampling.nearest,
-                num_threads=1,
-                warp_mem_limit=0
+        ground_control_points = [
+            rasterio.control.GroundControlPoint(
+                row=image_corner[1],
+                col=image_corner[0],
+                x=geodetic_corner[1],
+                y=geodetic_corner[0],
+                z=0.0  # assume flat projection
             )
+            for image_corner, geodetic_corner in zip(image_corners, geodetic_corners)
+        ]
 
-            image_metadata.update({
-                "crs": crs,
-                "transform": destination_data_transform,
-                "width": destination_data.shape[2],
-                "height": destination_data.shape[1],
-            })
+        image_data = numpy.transpose(key_frame.get_image(), (2, 0, 1))
 
-            destination_path = os.path.join(self.settings.out_dir, os.path.basename(key_frame.image_path))
-            with rasterio.open(destination_path, "w", **image_metadata) as destination_file:
-                destination_file.write(destination_data)
+        crs = rasterio.CRS.from_epsg(4326)  # WGS84
+        destination_data, destination_data_transform = warp.reproject(
+            image_data,
+            gcps=ground_control_points,
+            #src_transform=src_transform,
+            src_crs=crs,
+            dst_crs=crs,
+            resampling=rasterio.enums.Resampling.nearest,
+            num_threads=1,
+            warp_mem_limit=0
+        )
+
+        # TODO: move to "construct_rasterio_metadata"
+        image_metadata = {
+            "driver": "JPEG",
+            "dtype": "uint8",
+            "nodata": 0,  # pure-black pixels are no data
+            "width": destination_data.shape[2],
+            "height": destination_data.shape[1],
+            "count": 3,
+            "crs": crs,
+            "transform": destination_data_transform,
+        }
+
+        destination_path = os.path.join(self.settings.out_dir, os.path.basename(key_frame.image_path))
+        with rasterio.open(destination_path, "w", **image_metadata) as destination_file:
+            destination_file.write(destination_data)
+
+        #print(image_data.shape)
+        #print(type(image_data))
+        #print(image_metadata)

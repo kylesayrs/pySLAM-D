@@ -8,40 +8,19 @@ from Frame import Frame
 from pyslamd.utils.pose import get_pose
 
 
-def get_overlap(frame: Frame, reference: Frame) -> Union[shapely.Polygon, None]:
+def get_overlap(frame: Frame, key_frame: Frame, origin_frame: Frame) -> Union[shapely.Polygon, None]:
     """
     :param frame_one: first frame
     :param frame_two: second frame
     :return: overlap polygon if overlap exists, None otherwise
     """
-    corners = [
-        (0, 0),
-        (frame.settings.camera.width, 0),
-        (frame.settings.camera.width, frame.settings.camera.height),
-        (0, frame.settings.camera.height)
-    ]
-
-    extrinsic = get_pose(
-        frame.get_imu_rotation(reference),
-        frame.get_gps_translation(reference)
-    )
-
-    # TODO: if these are compuated with global reference, then they can be cached
-    # which reduces runtime
-    frame_corners = numpy.array([
-        (extrinsic @ numpy.append(frame.image_to_world_point(*corner), 1))[:2]  # project to flat plane
-        for corner in corners
-    ])
-
-    reference_corners = numpy.array([
-        reference.image_to_world_point(*corner)[:2]  # project to flat plane
-        for corner in corners
-    ])
+    frame_corners = frame.get_global_footprint(origin_frame)
+    key_frame_corners = key_frame.get_global_footprint(origin_frame)
 
     frame_footprint = shapely.Polygon(frame_corners)
-    reference_footprint = shapely.Polygon(reference_corners)
+    key_frame_footprint = shapely.Polygon(key_frame_corners)
 
-    overlap = shapely.intersection(frame_footprint, reference_footprint)
+    overlap = shapely.intersection(frame_footprint, key_frame_footprint)
 
     if overlap.is_empty:
         return None
@@ -52,45 +31,38 @@ def get_overlap(frame: Frame, reference: Frame) -> Union[shapely.Polygon, None]:
 def get_overlap_masks(
     frame_world_points: List[Tuple[float, float, float]],
     frame: Frame,
-    reference_world_points: List[Tuple[float, float, float]],
-    reference: Frame,
-    overlap: shapely.Polygon
+    key_frame_world_points: List[Tuple[float, float, float]],
+    key_frame: Frame,
+    overlap: shapely.Polygon,
+    origin_frame: Frame
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
     """
     TODO: This is pretty unreadable
     TODO: This is also very slow
 
-    :param frame_world_points: 
-    :param frame: 
-    :param reference_world_points: 
-    :param reference: 
-    :param overlap: 
+    :param frame_world_points: TODO
+    :param frame: TODO
+    :param key_frame_world_points: TODO
+    :param key_frame: TODO
+    :param overlap: TODO
+    :param origin_frame: TODO
     """
-    # do gps_imu pose translation
-    extrinsic = get_pose(
-        frame.get_imu_rotation(reference),
-        frame.get_gps_translation(reference)
-    )
+    frame_mask = [
+        overlap.contains(
+            shapely.Point(
+                frame.world_to_global_point(world_point, origin_frame)
+            )
+        )
+        for world_point in frame_world_points
+    ]
 
-    # create frame mask
-    frame_mask = []
-    for world_point in frame_world_points:
-        # move to reference frame
-        referenced_point = extrinsic @ numpy.append(world_point, 1)
+    key_frame_mask = [
+        overlap.contains(
+            shapely.Point(
+                key_frame.world_to_global_point(world_point, origin_frame)
+            )
+        )
+        for world_point in key_frame_world_points
+    ]
 
-        # project to flat plane
-        point = shapely.Point(referenced_point[:2])
-
-        # check in overlap
-        frame_mask.append(overlap.contains(point))
-
-    # create keyframe (reference) mask
-    reference_mask = []
-    for world_point in reference_world_points:
-        # project to flat plane
-        point = shapely.Point(world_point[:2])
-
-        # check in overlap
-        reference_mask.append(overlap.contains(point))
-
-    return numpy.array(frame_mask), numpy.array(reference_mask)
+    return numpy.array(frame_mask), numpy.array(key_frame_mask)

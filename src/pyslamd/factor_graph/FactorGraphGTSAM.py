@@ -21,6 +21,8 @@ from pyslamd.utils.pose import (
 class FactorGraphGTSAM:
     """
     Factor graph class used to track noise models, add factors, and optimize
+    Rotations are relative to north, translations are relative to origin frame
+    Apply translations, then rotations
 
     :param settings: Factor graph settings which define noise models
     """
@@ -38,13 +40,6 @@ class FactorGraphGTSAM:
         )
         self.gps_noise = gtsam.noiseModel.Isotropic.Sigma(3, settings.gps_noise)
         self.imu_noise = gtsam.noiseModel.Isotropic.Sigma(3, numpy.deg2rad(settings.imu_noise))
-
-        # Rotations are relative to north, translations are relative to origin frame
-        self.origin_frame = None
-
-
-    def set_origin_frame(self, key_frame: Frame):
-        self.origin_frame = key_frame
 
 
     def add_node(self, key_frame: Frame, initial_pose_estimate: numpy.ndarray):
@@ -98,8 +93,8 @@ class FactorGraphGTSAM:
         )
 
 
-    def add_gps_factor(self, key_frame: Frame):
-        translation = key_frame.get_gps_translation(self.origin_frame)
+    def add_gps_factor(self, key_frame: Frame, origin_frame: Frame):
+        translation = key_frame.get_gps_translation(origin_frame)
         gps_prior = gtsam.Pose3(
             r=gtsam.Rot3(numpy.eye(3)),  # not used
             t=translation
@@ -114,7 +109,7 @@ class FactorGraphGTSAM:
 
 
     def add_imu_factor(self, key_frame: Frame):
-        rotation = key_frame.get_imu_rotation()
+        rotation = key_frame.get_imu_rotation()  # imu is relative to north
         orientation_prior = gtsam.Pose3(
             r=gtsam.Rot3(rotation),
             t=numpy.zeros(3)  # not used
@@ -153,6 +148,16 @@ class FactorGraphGTSAM:
 
         :return: optimized factor graph
         """
+        #print(self.graph)
+        #print(dir(self.graph))
+        #print(self.graph.remove.__doc__)
+        #print(dir(self.graph.at(0)))
+        #print(self.graph.at(0).keys())
+        #print(dir(self.initial))
+        #print(self.initial.keys())
+        #print(X(0))
+        #exit(0)
+
         optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.initial)
         result = optimizer.optimize()
 

@@ -1,11 +1,11 @@
 from typing import Tuple, List, Optional
 
 import cv2
-import utm
 import copy
 import numpy
 import pymap3d
 import open3d as o3d
+from PIL import Image
 
 from pyslamd.Settings import Settings, CameraSettings
 from pyslamd.utils.exif import get_exif_measurements
@@ -39,7 +39,10 @@ class Frame:
         self.key_frame_num = None
         self.settings = settings
 
-        self.gps_coords, self.imu_orientation = get_exif_measurements(image_path, settings)
+        # read image
+        pil_image = Image.open(image_path)
+        self.image = numpy.asarray(pil_image)
+        self.gps_coords, self.imu_orientation = get_exif_measurements(pil_image, settings)
 
         self.keypoints = None
         self.descriptors = None
@@ -49,6 +52,8 @@ class Frame:
         self.world_point_cloud_cache = None
         self.global_point_cloud_cache = None
         self.point_cloud_needs_add = True
+
+        self.gps_imu_extrinsic_cache = None
 
 
     def set_key_frame_num(self, key_frame_num: int):
@@ -64,6 +69,10 @@ class Frame:
         """
         self.global_pose = pose
         self.global_point_cloud_cache = None
+
+    
+    def get_image(self) -> numpy.ndarray:
+        return self.image
 
 
     def assign_keypoints(self, keypoints: List[cv2.KeyPoint], descriptors: numpy.ndarray):
@@ -91,7 +100,7 @@ class Frame:
         The inverse camera intrinsic matrix is
         [[depth / fx      0        -cx * depth / fx]
          [     0      depth / fy   -cy * depth / fy]
-         [     0          0            depth      ]]
+         [     0          0            depth       ]]
 
         :param x_position: x position of point
         :param y_position: y position of point
@@ -137,7 +146,7 @@ class Frame:
             global pose
         """
         if self.world_point_cloud_cache is None:
-            image_rgb = o3d.io.read_image(self.image_path)
+            image_rgb = o3d.geometry.Image(self.image)
             image_depth = o3d.geometry.Image(self._get_depth_image())
             if any(image_rgb.get_max_bound() != image_depth.get_max_bound()):
                 raise ValueError("Image shape does not match camera parameters")
@@ -149,6 +158,7 @@ class Frame:
             point_cloud = point_cloud.uniform_down_sample(self.settings.visualizer.downsample)
 
             # for unexplainable reasons, open3d loads images upside down
+            # this line transforms them back to right side up
             point_cloud.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
 
             self.world_point_cloud_cache = point_cloud
@@ -157,7 +167,8 @@ class Frame:
 
     
     def get_gps_translation(self, reference: "Frame") -> numpy.ndarray:
-        return pymap3d.geodetic2enu(*self.gps_coords, *reference.gps_coords)
+        enu = pymap3d.geodetic2enu(*self.gps_coords, *reference.gps_coords)
+        return numpy.array(enu)
 
 
     def get_imu_rotation(self, reference: Optional["Frame"] = None) -> numpy.ndarray:
@@ -169,19 +180,75 @@ class Frame:
         return orientation_to_rotation(self.imu_orientation - reference_orientation)
 
     
-    def image_to_latlng_point(
+    def image_to_geodetic_point(
         self,
         x_position: float,
         y_position: float,
         origin_frame: "Frame"
-    ) -> Tuple[float, float]:
-        left, up, zone, letter = utm.from_latlon(*origin_frame.gps_coords[:2])
-
+    ) -> numpy.ndarray:
         world_point = self.image_to_world_point(x_position, y_position)
-        global_point = self.global_pose @ numpy.append(world_point, 1)
-        global_point_offset = numpy.array([left, up]) + global_point[:2]
+        global_point = (self.global_pose @ numpy.append(world_point, 1))[:3]
+        lat_lon_alt = pymap3d.enu2geodetic(*global_point, *origin_frame.gps_coords)
 
-        return utm.to_latlon(*global_point_offset[:2], zone, letter)
+        return numpy.array(lat_lon_alt)
+
+
+    def image_to_global_point(self, x_position: float, y_position: float, origin_frame: "Frame") -> numpy.ndarray:
+        """
+        Requires imu and gps
+        Translate, then rotate
+
+        :param x_position: 
+        :param y_position: 
+        :param reference: 
+        :return: 
+        """
+        world_point = self.image_to_world_point(x_position, y_position)
+        translation = self.get_gps_translation(origin_frame)
+        rotation = self.get_imu_rotation()  # global rotation
+
+        return rotation @ (world_point + translation)
+
+
+    def get_global_footprint(self, origin_frame: "Frame") -> List[numpy.ndarray]:
+        """
+        TODO: cache
+        """
+        corners = [
+            (0, 0),
+            (self.settings.camera.width, 0),
+            (self.settings.camera.width, self.settings.camera.height),
+            (0, self.settings.camera.height)
+        ]
+
+        return [
+            self.image_to_global_point(*corner, origin_frame)
+            for corner in corners
+        ]
+
+
+    def image_to_global_point(self, x_position: float, y_position: float, origin_frame: "Frame") -> numpy.ndarray:
+        """
+        TODO: speedup
+
+        :param x_position: TODO
+        :param y_position: TODO
+        :param origin_frame: TODO
+        :return: TODO
+        """
+        world_point = self.image_to_world_point(x_position, y_position)
+
+        return self.world_to_global_point(world_point, origin_frame)
+
+
+    def world_to_global_point(self, world_point: numpy.ndarray, origin_frame: "Frame") -> numpy.ndarray:
+        if self.gps_imu_extrinsic_cache is None:
+            self.gps_imu_extrinsic_cache = get_pose(
+                self.get_imu_rotation(),  # rotation is relative to north
+                self.get_gps_translation(origin_frame)  # translation is relative to origin frame
+            )
+
+        return (self.gps_imu_extrinsic_cache @ numpy.append(world_point, 1))[:3]
 
 
     def _get_pixel_depth(self, x_position: float, y_position: float) -> float:

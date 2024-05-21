@@ -7,12 +7,8 @@ from PIL.ExifTags import TAGS, GPSTAGS
 from pyslamd.Settings import Settings, PayloadSettings
 
 
-CoordsType = Tuple[float, float, float]
-DmsType = Tuple[float, float, float]
-
-
-def get_exif_measurements(image_path: str, settings: Settings) -> Tuple[numpy.ndarray, numpy.ndarray]:
-    exif_data = _get_labeled_exif(image_path)
+def get_exif_measurements(image: Image, settings: Settings) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    exif_data = _get_labeled_exif(image)
 
     gps_coords = _get_gps_coords(exif_data)
 
@@ -24,17 +20,16 @@ def get_exif_measurements(image_path: str, settings: Settings) -> Tuple[numpy.nd
     return gps_coords, imu_orientation
 
 
-def _get_labeled_exif(image_path: str) -> Dict[str, Any]:
-    image = Image.open(image_path)
+def _get_labeled_exif(image: Image) -> Dict[str, Any]:
     exif_data = image._getexif()
 
     if exif_data is None:
-        raise ValueError(f"{image_path} does not have exif data")
+        raise ValueError(f"Image does not have exif data")
 
     exif_data_labeled = {
         TAGS[key]: value
         for key, value in exif_data.items()
-        if key in TAGS
+        if key in TAGS.keys()
     }
 
     gps_data_labeled = {
@@ -43,7 +38,10 @@ def _get_labeled_exif(image_path: str) -> Dict[str, Any]:
         if key in GPSTAGS
     }
 
+    comment_fields = _get_comment_fields(image)
+
     exif_data_labeled.update(gps_data_labeled)
+    exif_data_labeled.update(comment_fields)
 
     return exif_data_labeled
 
@@ -59,13 +57,14 @@ def _get_gps_coords(exif_data: Dict[str, Any]) -> numpy.ndarray:
         exif_data["GPSLongitudeRef"],
     )
 
-    alt = float(exif_data["GPSAltitude"])
+    #alt = float(27.15909767150879)
+    alt = float(exif_data["alt_home"])  # get altitude relative to home, not agl
 
     return numpy.array([lat, lng, alt])
 
 
 def _get_imu_orientation(
-    exif_data: Dict[str, Union[DmsType, str]],
+    exif_data: Dict[str, Union[Any]],
     settings: PayloadSettings
 ) -> numpy.ndarray:
     """
@@ -76,13 +75,13 @@ def _get_imu_orientation(
     :param settings: payload settings
     :return: numpy array of yaw, roll, and pitch values
     """
-    if settings.gimbal_enabled:
-        yaw = (
-            settings.constant_heading
-            if settings.constant_heading is not None
-            else -1 * float(exif_data["GPSImgDirection"]) + settings.yaw_offset  # the -1 was found emperically
-        )
+    yaw = (
+        settings.constant_heading
+        if settings.constant_heading is not None
+        else -1 * float(exif_data["GPSImgDirection"]) + settings.yaw_offset  # the -1 was found emperically
+    )
 
+    if settings.gimbal_enabled:
         return numpy.array([
             yaw,
             0.0,
@@ -90,21 +89,22 @@ def _get_imu_orientation(
         ])
 
     else:
-        orientation_comment = exif_data["Comment"]
-        data_comments = orientation_comment.split(",")
-        data = {
-            data_comment.split("=")[0]: data_comment.split("=")[1]
-            for data_comment in data_comments
-        }
         return numpy.array([
-            (
-                settings.constant_heading
-                if settings.constant_heading is not None
-                else float(data["yaw"])
-            ),
-            float(data["roll"]),
-            float(data["pitch"])
+            yaw,
+            float(exif_data["roll"]),
+            float(exif_data["pitch"])
         ])
+
+
+def _get_comment_fields(image: Image) -> Dict[str, str]:
+    if "comment" not in image.info:
+        return {}
+
+    exif_comment = image.info["comment"].decode("utf-8")
+    return {
+        data_comment.split("=")[0]: data_comment.split("=")[1]
+        for data_comment in exif_comment.split(",")
+    }
 
 
 def _get_decimal_from_dms(dms: Tuple[float, float, float], ref: Tuple[float, float, float]) -> float:

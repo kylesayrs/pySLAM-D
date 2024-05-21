@@ -14,49 +14,33 @@ parser.add_argument("image_dir", help="Image directory path")
 def main():
     args = parser.parse_args()
 
-    #"""bostongc
+    #settings = Settings()
+
+    #"""dahl green
+    """
     settings = Settings(
         camera=CameraSettings(
-            fx=5223,
-            fy=5223,
-            cx=2038,
-            cy=1558,
-            width=4032,
-            height=3040,
+            fx=1133.133974348766,
+            fy=1129.223966507744,
+            cx=1018.438140938584,
+            cy=495.1870189047092,
+            width=1920,
+            height=1080
         ),
         payload=PayloadSettings(
-            constant_heading=None,
-            gimbal_enabled=True,
-            yaw_offset=180.0,
-        )
-    )
-    #"""
-    """dahlgreen
-    settings = Settings(
-        camera=CameraSettings(
-            fx=5223,
-            fy=5223,
-            cx=2038,
-            cy=1558,
-            width=4032,
-            height=3040,
-        ),
-        payload=PayloadSettings(
-            constant_heading=None,
-            gimbal_enabled=True,
-            yaw_offset=180.0,
+            constant_heading=0.0
         )
     )
     """
+    settings = Settings()
+
+    print(settings)
 
     tracker = Tracker(settings)
 
     image_paths = get_image_paths(args.image_dir)
     for image_path in image_paths:
         tracker.process_image(image_path)
-
-    while True:
-        time.sleep(1)
     
 
 if __name__ == "__main__":
