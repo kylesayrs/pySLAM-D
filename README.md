@@ -12,7 +12,7 @@ The first factor type, odometry factors, are determined by performing visual odo
 
 The second factor type, gps factors, help to determine the image’s position. These factors are often noisy, but are valuable for compensating for bad odometry estimates. Their noise, unlike odometry error, is independent of flight duration, meaning that these factors prevent images from drifting away from their true, georeferenced positions over time.
 
-The third factor type, attitude factors, incorporate attitude measurements from the drone when the picture was taken. These factors make image rotations more accurate and can be used to prune odometry filters, making odometry calculations faster and more accurate.
+The third factor type, attitude factors, incorporate attitude measurements from the drone when the picture was taken. These factors make image rotations more accurate and can be used as a prior for the odometry area of overlap, making odometry matching faster and increasing robustness to low overlap and high attitude datasets.
 
 <p align="center">
 <img src="assets/full_stitch.png" alt="Example Stitching"/>
