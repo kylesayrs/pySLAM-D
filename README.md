@@ -6,13 +6,15 @@ PySLAM-D is a UAV-tailored SLAM stitching inspired by [pySLAM-D](https://github.
 </p>
 
 ## Technical explaination ##
-The Pyslam-D live stitching algorithm works by generating a factor graph whose nodes are each image’s pose in georeferenced 3D space and whose edges (factors) are the relative pose transformations from one node to another. During the optimization step, the nodes of the factor graph are optimized for spatial consistency, meaning that even noisy sensor measurements can still reinforce one another to produce a consistent estimation of image poses.
+The Pyslam-D live stitching algorithm works by generating a factor graph whose nodes are each camera’s pose in georeferenced 3D space and whose edges (factors) are the relative pose transformations from one node to another. During the optimization step, the nodes of the factor graph are optimized for spatial consistency, meaning that even noisy sensor measurements can still reinforce one another to produce a consistent estimation of camera poses.
 
 The first factor type, odometry factors, are determined by performing visual odometry between neighboring images and using point cloud registration to estimate the pose transformation between the two images. These factors can be computationally expensive, but help neighboring images “mesh” with each other independently of instrument noise.
 
 The second factor type, gps factors, help to determine the camera's absolute position. These factors are often noisy, but are valuable for compensating for bad odometry estimates. The error produced by GPS, unlike relative odometry error, is independent of flight duration, meaning that these factors prevent images from drifting away from their true, georeferenced positions over time.
 
 The third factor type, attitude factors, incorporate attitude measurements from the drone when the picture was taken. These factors improve estimates of image rotation and can be used as a prior for the odometry area of overlap, making odometry matching faster and increasing robustness to low overlap and high attitude datasets.
+
+One known bug is that this implementation projects images directly downwards from the camera position. Future work will project the image with respect to the orientation of the camera, therefore better supporting non-gimbaled payloads.
 
 <p align="center">
 <img src="assets/full_stitch.png" alt="Example Stitching"/>
